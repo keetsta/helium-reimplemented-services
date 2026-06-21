@@ -78,6 +78,10 @@ http {
         server ext_proxy_backup:8000 backup;
     }
 
+    upstream sync_backend {
+        server sync:8000;
+    }
+
     # services
     server {
         listen [::]:443 ssl;
@@ -143,6 +147,13 @@ http {
         location /ubo/ {
             proxy_pass http://ubo_proxy:8000/;
             proxy_pass_request_body off;
+        }
+
+        location /sync/ {
+            # Device-synced extension/bookmark blobs are larger than the
+            # global 64k cap; the sync service enforces its own limit.
+            client_max_body_size 2m;
+            proxy_pass http://sync_backend/;
         }
     }
 }

@@ -1,0 +1,12 @@
+{
+    "tasks": {
+        "dev": "deno serve -A main.ts",
+        "run": "deno serve --allow-env=SYNC_MAX_BYTES,DENO_KV_PATH --unstable-kv --allow-net --allow-read --allow-write main.ts"
+    },
+    "fmt": {
+        "indentWidth": 4,
+        "singleQuote": true,
+        "lineWidth": 100,
+        "trailingCommas": "onlyMultiLine"
+    }
+}

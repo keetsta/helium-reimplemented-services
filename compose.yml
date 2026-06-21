@@ -48,6 +48,17 @@ services:
       - HMAC_SECRET=${HMAC_SECRET}
       - PROXY_BASE_URL=${PROXY_BASE_URL}
 
+  sync:
+    container_name: sync
+    read_only: true
+    build: ./svc/sync
+    restart: unless-stopped
+    environment:
+      - DENO_KV_PATH=/data/sync.db
+      - SYNC_MAX_BYTES=${SYNC_MAX_BYTES:-1048576}
+    volumes:
+      - sync_data:/data
+
   acme.sh:
     image: "neilpang/acme.sh@sha256:6960358a673694fc18d895f812585ca73f973ed278c2750c7b3f74485f493485"
     volumes:
@@ -61,6 +72,7 @@ services:
 
 volumes:
   acme.sh: {}
+  sync_data: {}
 
 # Helium services are designed to run on a full-stack network.
 # If you need to disable this, make a compose.override.yml file.
