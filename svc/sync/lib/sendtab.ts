@@ -6,12 +6,14 @@ import { kv } from './db.ts';
 // instead of on the next poll tick.
 //
 // Routing (nginx strips the "/sync" prefix, so the service sees "/sendtab/..."):
-//   POST /sendtab/<deviceId>            enqueue a tab for <deviceId>
-//   GET  /sendtab/<deviceId>?after=<n>  long-poll the inbox of <deviceId>
+//   POST /sendtab/<deviceId>   enqueue a tab for <deviceId>
+//   GET  /sendtab/<deviceId>   long-poll the inbox of <deviceId>
 //
 // Storage:  ['sendtab', hashedToken, deviceId] -> { seq, items: Message[] }
-// `seq` increments on every enqueue; clients pass ?after=<lastSeenSeq> and the
-// server holds the GET open (via kv.watch) until seq advances or it times out.
+// POST appends to `items` and bumps `seq`. GET drains `items` (atomic take +
+// clear) and returns them, so each tab is delivered exactly once: there is no
+// growing backlog and no redelivery loop. `seq` stays monotonic only so a
+// parked kv.watch on the GET side reliably wakes on every write.
 
 const MAX_BYTES = Number(Deno.env.get('SENDTAB_MAX_BYTES') ?? 64 * 1024);
 const MAX_ITEMS = Number(Deno.env.get('SENDTAB_MAX_ITEMS') ?? 50);
@@ -83,22 +85,42 @@ const handlePost = async (key: Deno.KvKey, request: Request) => {
     throw { status: 409, text: 'too much contention, retry' };
 };
 
-const handleGet = async (key: Deno.KvKey, url: URL) => {
-    const after = Number(url.searchParams.get('after') ?? 0);
+// Atomically take everything in the inbox and leave it empty. Returns the
+// drained items (possibly empty). `seq` is kept monotonic so kv.watch on the
+// GET side still sees a write and parked long-polls wake. Draining on read is
+// what makes each tab deliver exactly once: once handed to a client they're
+// gone server-side, so a re-poll can't redeliver them (no growing backlog, no
+// delivery loop).
+const drainOnce = async (key: Deno.KvKey): Promise<unknown[]> => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+        const entry = await kv.get<Inbox>(key);
+        const items = entry.value?.items ?? [];
+        if (items.length === 0) {
+            return [];
+        }
+        const next: Inbox = { seq: entry.value?.seq ?? 0, items: [] };
+        const result = await kv.atomic()
+            .check(entry)
+            .set(key, next)
+            .commit();
+        if (result.ok) {
+            return items;
+        }
+    }
+    // Lost the race repeatedly; report empty and let the client re-poll.
+    return [];
+};
 
-    const current = await kv.get<Inbox>(key);
-    const seq = current.value?.seq ?? 0;
-    if (seq > after) {
-        // Already have something newer than the client has seen.
-        return respond(200, {
-            seq,
-            items: current.value?.items ?? [],
-        });
+const handleGet = async (key: Deno.KvKey, _url: URL) => {
+    // Deliver anything already waiting, draining it so it's never sent twice.
+    const ready = await drainOnce(key);
+    if (ready.length > 0) {
+        return respond(200, { items: ready });
     }
 
-    // Nothing new yet: hold the request open until the key changes or we hit
-    // the wait cap, whichever comes first. kv.watch wakes us only when THIS
-    // device's inbox is written, so an idle device costs one parked request.
+    // Nothing waiting: hold the request open until the key changes or we hit
+    // the wait cap. kv.watch wakes us only when THIS device's inbox is written,
+    // so an idle device costs one parked request.
     const watcher = kv.watch<[Inbox]>([key]);
     const reader = watcher.getReader();
     const timeout = new Promise<'timeout'>((resolve) =>
@@ -112,22 +134,17 @@ const handleGet = async (key: Deno.KvKey, url: URL) => {
                 // 204: no new tabs; client immediately re-polls.
                 return respond(204);
             }
-            const { value, done } = race as ReadableStreamReadResult<[
-                { value: Inbox | null },
-            ]>;
+            const { done } = race as ReadableStreamReadResult<unknown>;
             if (done) {
                 return respond(204);
             }
-            const entry = value?.[0];
-            const newSeq = entry?.value?.seq ?? 0;
-            if (newSeq > after) {
-                return respond(200, {
-                    seq: newSeq,
-                    items: entry?.value?.items ?? [],
-                });
+            // The key changed; drain whatever landed. A spurious wake (e.g. the
+            // initial emission echoing current empty state) drains to nothing
+            // and we keep waiting until the timeout promise wins.
+            const drained = await drainOnce(key);
+            if (drained.length > 0) {
+                return respond(200, { items: drained });
             }
-            // Spurious wake (e.g. first emission echoing current state); keep
-            // waiting until the timeout promise wins.
         }
     } finally {
         reader.cancel();
