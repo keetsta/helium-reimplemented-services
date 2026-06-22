@@ -1,6 +1,6 @@
 import { hashToken, isValidToken, respond } from './util.ts';
-
-const kv = await Deno.openKv(Deno.env.get('DENO_KV_PATH') || undefined);
+import { kv } from './db.ts';
+import { handleSendTab } from './sendtab.ts';
 
 // Collections a device is allowed to sync. Keep this an explicit allowlist so
 // a compromised/buggy client can't spray arbitrary keys into the store.
@@ -113,6 +113,11 @@ export const handle = async (request: Request) => {
 
     if (url.pathname === '/healthz') {
         return respond(200, 'ok');
+    }
+
+    // Send-tab-to-device lives under /sendtab/* (nginx strips the /sync prefix).
+    if (url.pathname.startsWith('/sendtab')) {
+        return await handleSendTab(request, url);
     }
 
     const token = getToken(request);
