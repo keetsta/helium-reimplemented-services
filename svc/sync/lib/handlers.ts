@@ -4,7 +4,7 @@ const kv = await Deno.openKv(Deno.env.get('DENO_KV_PATH') || undefined);
 
 // Collections a device is allowed to sync. Keep this an explicit allowlist so
 // a compromised/buggy client can't spray arbitrary keys into the store.
-const COLLECTIONS = new Set(['extensions', 'bookmarks']);
+const COLLECTIONS = new Set(['extensions', 'bookmarks', 'tabs']);
 
 // Per-collection payload cap. The blob is opaque JSON produced by the client
 // (extension id list / bookmark tree). Default 1 MiB, override via env.
