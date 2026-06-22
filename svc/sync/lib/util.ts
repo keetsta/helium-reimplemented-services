@@ -12,7 +12,10 @@ export const respond = (
     headers ??= {};
     headers['content-type'] ??= 'text/plain';
 
-    return new Response(response, { status, headers });
+    // 204/304 (and 1xx) must not carry a body; passing even an empty string
+    // makes the Response constructor throw.
+    const bodyless = status === 204 || status === 304 || (status >= 100 && status < 200);
+    return new Response(bodyless ? null : response, { status, headers });
 };
 
 export const respondWithError = (e: unknown) => {
